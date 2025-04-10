@@ -7,15 +7,49 @@
 .print "Listing of mimic-iv data files"
 .system tree
 
+-- core tables
+
+.print "Creating admissions table"
+create table if not exists admissions as
+select * from read_csv_auto('core/admissions.csv.gz', escape='"');
+
+.print "Creating patients table"
+create table if not exists patients as
+select * from read_csv_auto('core/patients.csv.gz', escape='"');
+
+-- hosp tables
+
+.print "Creating labevents table"
+create table if not exists labevents as
+select * from read_csv_auto('hosp/labevents.csv.gz', escape='"');
+
+.print "Creating d_labitems table"
+create table if not exists d_labitems as
+select * from read_csv_auto('hosp/d_labitems.csv.gz', escape='"');
+
+-- icustays tables
+
+.print "Creating d_items table"
+create table if not exists d_items as
+select * from read_csv_auto('icu/d_items.csv.gz', escape='"');
+
+.print "Creating chartevents table"
+create table if not exists chartevents as
+select * from read_csv_auto('icu/chartevents.csv.gz', escape='"');
+
+.print "Creating icustays table"
+create table if not exists icustays as
+select * from read_csv_auto('icu/icustays.csv.gz', escape='"');
+
 -- labels table
 
 .print "Creating ld_labels table"
 create table if not exists ld_labels as
   select i.subject_id, i.hadm_id, i.stay_id, i.intime, i.outtime, adm.hospital_expire_flag, i.los
-    from 'icu/icustays.csv.gz' as i
-    inner join 'core/admissions.csv.gz' as adm
+    from 'icustays' as i
+    inner join admissions as adm
       on adm.hadm_id = i.hadm_id
-    inner join 'core/patients.csv.gz' as p
+    inner join patients as p
       on p.subject_id = i.subject_id
     where i.los > (5/24)  -- and exclude anyone who doesn't have at least 5 hours of data
       and (extract(year from i.intime) - p.anchor_year + p.anchor_age) > 17;  -- only include adults
@@ -31,13 +65,13 @@ SELECT
   AVG(ch.valuenum) FILTER (WHERE d.label = 'GCS - Motor Response') AS motor,
   AVG(ch.valuenum) FILTER (WHERE d.label = 'GCS - Verbal Response') AS verbal,
   AVG(ch.valuenum) FILTER (WHERE d.label = 'Height (cm)') AS height
-FROM read_csv_auto('icu/chartevents.csv.gz', escape='"') AS ch
-JOIN 'icu/icustays.csv.gz' AS i ON ch.stay_id = i.stay_id
-JOIN 'icu/d_items.csv.gz' AS d ON d.itemid = ch.itemid
+FROM chartevents AS ch
+JOIN icustays AS i ON ch.stay_id = i.stay_id
+JOIN d_items AS d ON d.itemid = ch.itemid
 WHERE ch.valuenum IS NOT NULL
   AND d.label IN ('Admission Weight (Kg)', 'GCS - Eye Opening', 'GCS - Motor Response', 'GCS - Verbal Response', 'Height (cm)')
   AND ch.valuenum != 0
-  AND (hour(ch.charttime) - hour(i.intime)) BETWEEN -24 AND 5
+  AND (date_part('hour', ch.charttime) - date_part('hour', i.intime)) between -24 and 5
 GROUP BY ch.stay_id;
 
 .print "Creating ld_flat table ..."
@@ -46,9 +80,9 @@ create table if not exists ld_flat as
     adm.ethnicity, i.first_careunit, adm.admission_location, adm.insurance, ev.height, ev.weight,
     extract(hour from i.intime) as hour, ev.eyes, ev.motor, ev.verbal
     from ld_labels as la
-    inner join 'core/patients.csv.gz' as p on p.subject_id = la.subject_id
-    inner join 'icu/icustays.csv.gz' as i on i.stay_id = la.stay_id
-    inner join 'core/admissions.csv.gz' as adm on adm.hadm_id = la.hadm_id
+    inner join patients as p on p.subject_id = la.subject_id
+    inner join icustays as i on i.stay_id = la.stay_id
+    inner join admissions as adm on adm.hadm_id = la.hadm_id
     left join extra_vars as ev on ev.stay_id = la.stay_id;
 
 -- \i MIMIC_preprocessing/timeseries.sql
@@ -59,7 +93,7 @@ create table if not exists ld_commonlabs as
   -- extracting the itemids for all the labevents that occur within the time bounds for our cohort
   with labsstay as (
     select l.itemid, la.stay_id
-    from read_csv_auto('hosp/labevents.csv.gz', escape='"') as l
+    from labevents as l
     inner join ld_labels as la
       on la.hadm_id = l.hadm_id
     where l.valuenum is not null  -- stick to the numerical data
@@ -74,7 +108,7 @@ create table if not exists ld_commonlabs as
     having avg(count) > 3)  -- we want the features to have at least 3 values entered for the average patient
   select d.label, count(distinct labsstay.stay_id) as count, a.avg_obs
     from labsstay
-    inner join 'hosp/d_labitems.csv.gz' as d
+    inner join d_labitems as d
       on d.itemid = labsstay.itemid
     inner join avg_obs_per_stay as a
       on a.itemid = labsstay.itemid
@@ -83,11 +117,9 @@ create table if not exists ld_commonlabs as
     having count(distinct labsstay.stay_id) > (select count(distinct stay_id) from ld_labels)*0.25
     order by count desc;
 
-.quit
-
+.print "Creating ld_timeserieslab table..."
 -- get the time series features from the most common lab tests (45 of these)
-drop materialized view if exists ld_timeserieslab cascade;
-create materialized view ld_timeserieslab as
+create table if not exists ld_timeserieslab as
   -- we extract the number of minutes in labresultoffset because this is how the data in eICU is arranged
   select la.stay_id as patientunitstayid, floor((date_part('epoch', l.charttime) - date_part('epoch', la.intime))/60)
   as labresultoffset, d.label as labname, l.valuenum as labresult
@@ -102,6 +134,7 @@ create materialized view ld_timeserieslab as
     -- admission and the end of the patients' stay
     where (date_part('epoch', l.charttime) - date_part('epoch', la.intime))/(60*60*24) between -1 and la.los
       and l.valuenum is not null;  -- filter out null values
+.quit
 
 -- extract the most common chartevents and the corresponding counts of how many patients have values for those chartevents
 drop materialized view if exists ld_commonchart cascade;
