@@ -5,4 +5,5 @@ eICU_data
 MIMIC_data
 __pycache__
 figures
+data/
 *.csv
