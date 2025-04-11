@@ -2,44 +2,43 @@
 .cd data
 
 .open mimic-iv-0.4.db
-.cd mimic-iv-0.4/
 
 .print "Listing of mimic-iv data files"
-.system tree
+.system cd mimic-iv-0.4 && tree
 
 -- core tables
 
 .print "Creating admissions table"
 create table if not exists admissions as
-select * from read_csv_auto('core/admissions.csv.gz', escape='"');
+select * from read_csv_auto('mimic-iv-0.4/core/admissions.csv.gz', escape='"');
 
 .print "Creating patients table"
 create table if not exists patients as
-select * from read_csv_auto('core/patients.csv.gz', escape='"');
+select * from read_csv_auto('mimic-iv-0.4/core/patients.csv.gz', escape='"');
 
 -- hosp tables
 
 .print "Creating labevents table"
 create table if not exists labevents as
-select * from read_csv_auto('hosp/labevents.csv.gz', escape='"');
+select * from read_csv_auto('mimic-iv-0.4/hosp/labevents.csv.gz', escape='"');
 
 .print "Creating d_labitems table"
 create table if not exists d_labitems as
-select * from read_csv_auto('hosp/d_labitems.csv.gz', escape='"');
+select * from read_csv_auto('mimic-iv-0.4/hosp/d_labitems.csv.gz', escape='"');
 
 -- icustays tables
 
 .print "Creating d_items table"
 create table if not exists d_items as
-select * from read_csv_auto('icu/d_items.csv.gz', escape='"');
+select * from read_csv_auto('mimic-iv-0.4/icu/d_items.csv.gz', escape='"');
 
 .print "Creating chartevents table"
 create table if not exists chartevents as
-select * from read_csv_auto('icu/chartevents.csv.gz', escape='"');
+select * from read_csv_auto('mimic-iv-0.4/icu/chartevents.csv.gz', escape='"');
 
 .print "Creating icustays table"
 create table if not exists icustays as
-select * from read_csv_auto('icu/icustays.csv.gz', escape='"');
+select * from read_csv_auto('mimic-iv-0.4/icu/icustays.csv.gz', escape='"');
 
 -- labels table
 
@@ -134,11 +133,10 @@ create table if not exists ld_timeserieslab as
     -- admission and the end of the patients' stay
     where (date_part('epoch', l.charttime) - date_part('epoch', la.intime))/(60*60*24) between -1 and la.los
       and l.valuenum is not null;  -- filter out null values
-.quit
 
 -- extract the most common chartevents and the corresponding counts of how many patients have values for those chartevents
-drop materialized view if exists ld_commonchart cascade;
-create materialized view ld_commonchart as
+.print "Creating ld_commonchart table..."
+create table if not exists ld_commonchart as
   -- extracting the itemids for all the chartevents that occur within the time bounds for our cohort
   with chartstay as (
       select ch.itemid, la.stay_id
@@ -152,7 +150,7 @@ create materialized view ld_commonchart as
   -- getting the average number of times each itemid appears in an icustay (filtering only those that are more than 5)
   avg_obs_per_stay as (
     select itemid, avg(count) as avg_obs
-    from (select itemid, count(*) from chartstay group by itemid, stay_id) as obs_per_stay
+    from (select itemid, count(*) as count from chartstay group by itemid, stay_id) as obs_per_stay
     group by itemid
     having avg(count) > 5)  -- we want the features to have at least 5 values entered for the average patient
   select d.label, count(distinct chartstay.stay_id) as count, a.avg_obs
@@ -167,8 +165,8 @@ create materialized view ld_commonchart as
     order by count desc;
 
 -- get the time series features from the most common chart features (129 of these)
-drop materialized view if exists ld_timeseries cascade;
-create materialized view ld_timeseries as
+.print "Creating ld_timeseries table..."
+create table if not exists ld_timeseries as
   -- we extract the number of minutes in chartoffset because this is how the data in eICU is arranged
   select la.stay_id as patientunitstayid, floor((date_part('epoch', ch.charttime) - date_part('epoch', la.intime))/60)
   as chartoffset, d.label as chartvaluelabel, ch.valuenum as chartvalue
@@ -183,20 +181,25 @@ create materialized view ld_timeseries as
       and ch.valuenum is not null;  -- filter out null values
 
 
--- -- we need to make sure that we have at least some form of time series for every patient in diagnoses, flat and labels
--- drop materialized view if exists ld_timeseries_patients cascade;
--- create materialized view ld_timeseries_patients as
---   with repeats as (
---     select distinct patientunitstayid
---       from ld_timeserieslab
---     union
---     select distinct patientunitstayid
---       from ld_timeseries)
---   select distinct patientunitstayid
---     from repeats;
+-- we need to make sure that we have at least some form of time series for every patient in diagnoses, flat and labels
+.print "Creating ld_timeseries_patients table..."
+create table if not exists ld_timeseries_patients as
+  with repeats as (
+    select distinct patientunitstayid
+      from ld_timeserieslab
+    union
+    select distinct patientunitstayid
+      from ld_timeseries)
+  select distinct patientunitstayid
+    from repeats;
 
 -- -- renaming some of the variables so that they are equivalent to those in eICU
--- \copy (select subject_id as uniquepid, hadm_id as patienthealthsystemstayid, stay_id as patientunitstayid, hospital_expire_flag as actualhospitalmortality, los as actualiculos from ld_labels as l where l.stay_id in (select * from ld_timeseries_patients) order by l.stay_id) to '/Users/emmarocheteau/PycharmProjects/TPC-LoS-prediction/MIMIC_data/labels.csv' with csv header
--- \copy (select * from ld_flat as f where f.patientunitstayid in (select * from ld_timeseries_patients) order by f.patientunitstayid) to '/Users/emmarocheteau/PycharmProjects/TPC-LoS-prediction/MIMIC_data/flat_features.csv' with csv header
--- \copy (select * from ld_timeserieslab as tl order by tl.patientunitstayid, tl.labresultoffset) to '/Users/emmarocheteau/PycharmProjects/TPC-LoS-prediction/MIMIC_data/timeserieslab.csv' with csv header
--- \copy (select * from ld_timeseries as t order by t.patientunitstayid, t.chartoffset) to '/Users/emmarocheteau/PycharmProjects/TPC-LoS-prediction/MIMIC_data/timeseries.csv' with csv header
+
+.cd ..
+.system rm -rf MIMIC_data && mkdir MIMIC_data
+
+.print "Exporting data in CSV files..."
+copy (select subject_id as uniquepid, hadm_id as patienthealthsystemstayid, stay_id as patientunitstayid, hospital_expire_flag as actualhospitalmortality, los as actualiculos from ld_labels as l where l.stay_id in (select * from ld_timeseries_patients) order by l.stay_id) to './MIMIC_data/labels.csv' (HEADER, DELIMITER ',');
+copy (select * from ld_flat as f where f.patientunitstayid in (select * from ld_timeseries_patients) order by f.patientunitstayid) to './MIMIC_data/flat_features.csv' (HEADER, DELIMITER ',');
+copy (select * from ld_timeserieslab as tl order by tl.patientunitstayid, tl.labresultoffset) to './MIMIC_data/timeserieslab.csv' (HEADER, DELIMITER ',');
+copy (select * from ld_timeseries as t order by t.patientunitstayid, t.chartoffset) to './MIMIC_data/timeseries.csv' (HEADER, DELIMITER ',');
