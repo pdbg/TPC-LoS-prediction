@@ -21,6 +21,7 @@ if __name__=='__main__':
 
     c = initialise_tpc_arguments()
     c['exp_name'] = 'TPC'
+    c['model_type'] = 'tpc'
 
     log_folder_path = create_folder('models/experiments/{}/{}'.format(c.dataset, c.task), c.exp_name)
 
