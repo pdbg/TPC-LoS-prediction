@@ -48,6 +48,8 @@ def gen_config(parser):
     c = Config()
     for arg in vars(args):
         c[arg] = getattr(args, arg)
+    c['quantile'] = 0.5
+    c['delta'] = 1.0
     return c
 
 def initialise_tpc_arguments():

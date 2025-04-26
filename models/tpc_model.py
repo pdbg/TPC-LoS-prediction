@@ -47,6 +47,37 @@ class MSELoss(nn.Module):
         return loss.mean()
 
 
+# QuantileHuberLoss implementation
+class QuantileHuberLoss(nn.Module):
+    def __init__(self, quantile=0.5, delta=1.0):
+        super(QuantileHuberLoss, self).__init__()
+        self.quantile = quantile
+        self.delta = delta
+
+    def forward(self, y_hat, y, mask, seq_length, sum_losses=False):
+        error = y - y_hat
+        abs_error = torch.abs(error)
+
+        # Huber loss part
+        quadratic = torch.minimum(abs_error, torch.tensor(self.delta, device=error.device))
+        linear = abs_error - quadratic
+        huber_loss = 0.5 * quadratic ** 2 + self.delta * linear
+
+        # Quantile adjustment
+        loss = torch.where(error >= 0, self.quantile * huber_loss, (1 - self.quantile) * huber_loss)
+
+        # Apply mask
+        loss = loss * mask
+
+        loss = torch.sum(loss, dim=1)  # sum across sequence dimension
+
+        if not sum_losses:
+            loss = loss / seq_length.clamp(min=1)
+
+        return loss.mean()
+
+
+
 class MyBatchNorm(_BatchNorm):
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True,
                  track_running_stats=True):
@@ -131,6 +162,7 @@ class TempPointConv(nn.Module):
         self.msle_loss = MSLELoss()
         self.mse_loss = MSELoss()
         self.bce_loss = nn.BCELoss()
+        self.quantile_huber_loss = QuantileHuberLoss(quantile=config.quantile, delta=config.delta)
 
         self.main_dropout = nn.Dropout(p=self.main_dropout_rate)
         self.temp_dropout = nn.Dropout(p=self.temp_dropout_rate)
@@ -673,6 +705,8 @@ class TempPointConv(nn.Module):
                 los_loss = self.msle_loss(y_hat_los, y_los, mask.type(bool_type), seq_lengths, sum_losses)
             elif loss_type == 'mse':
                 los_loss = self.mse_loss(y_hat_los, y_los, mask.type(bool_type), seq_lengths, sum_losses)
+            elif loss_type == 'quantile_huber':
+                los_loss = self.quantile_huber_loss(y_hat_los, y_los, mask.type(bool_type), seq_lengths, sum_losses)
             if self.task == 'LoS':
                 loss = los_loss
             # multitask loss
