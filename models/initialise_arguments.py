@@ -50,6 +50,7 @@ def gen_config(parser):
         c[arg] = getattr(args, arg)
     c['quantile'] = 0.5
     c['delta'] = 1.0
+    c['no_diag'] = True
     return c
 
 def initialise_tpc_arguments():
